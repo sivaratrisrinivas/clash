@@ -5,33 +5,22 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
   };
 
   try {
-    // 1. Validate Env
     if (!context.env.GEMINI_API_KEY) {
       return new Response(JSON.stringify({ error: "Server Error: No API Key" }), { status: 500, headers: corsHeaders });
     }
 
-    // 2. Parse Form Data
-    // Note: On free tier, parsing 40MB+ might still occasionally hit memory limits.
-    // If this fails often, you must upload files one by one.
-    let formData;
-    try {
-        formData = await context.request.formData();
-    } catch (e) {
-        return new Response(JSON.stringify({ error: "Upload too large for free server. Try fewer files." }), { status: 413, headers: corsHeaders });
-    }
-
+    const formData = await context.request.formData();
     const question = formData.get("question") as string;
     if (!question) return new Response(JSON.stringify({ error: "Missing question" }), { status: 400, headers: corsHeaders });
 
     const contentParts: any[] = [];
     
-    // 3. Process & Upload Each File
+    // Process files
     for (const [key, value] of formData.entries()) {
       if (key.startsWith("file_") && value instanceof File) {
         try {
-          // --- A. INITIALIZE UPLOAD ---
+          // 1. Initialize Upload
           const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${context.env.GEMINI_API_KEY}`;
-          
           const initRes = await fetch(uploadUrl, {
             method: "POST",
             headers: {
@@ -48,7 +37,7 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
           const uploadUrlHeader = initRes.headers.get("x-goog-upload-url");
           if (!uploadUrlHeader) throw new Error("Failed to get upload URL");
 
-          // --- B. UPLOAD BYTES ---
+          // 2. Upload Bytes
           const uploadRes = await fetch(uploadUrlHeader, {
             method: "POST",
             headers: {
@@ -62,37 +51,26 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
           if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.statusText}`);
           const fileInfo = await uploadRes.json() as any;
           
-          // --- C. WAIT FOR PROCESSING (POLLING) ---
-          // Large files take time. We poll less frequently to save CPU.
+          // 3. Poll for Processing (Vital for 20MB+ files)
           let state = fileInfo.file.state;
           let attempts = 0;
-          
-          // Poll up to 20 seconds (10 attempts * 2s)
-          while (state === "PROCESSING" && attempts < 10) {
-             await new Promise(r => setTimeout(r, 2000)); // Wait 2s
-             
+          while (state === "PROCESSING" && attempts < 20) { // 40 seconds max
+             await new Promise(r => setTimeout(r, 2000));
              const statusRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/files/${fileInfo.file.name.split('/').pop()}?key=${context.env.GEMINI_API_KEY}`);
              const statusData = await statusRes.json() as any;
-             
              state = statusData.state;
              if (state === "FAILED") throw new Error("Google failed to process this file.");
              attempts++;
           }
 
-          if (state === "PROCESSING") {
-             // If still processing, we skip this file to avoid server timeout
-             console.warn(`File ${value.name} is taking too long to process. Skipped.`);
-             continue;
+          if (state === "ACTIVE") {
+            contentParts.push({
+              file_data: {
+                mime_type: value.type || "application/pdf",
+                file_uri: fileInfo.file.uri
+              }
+            });
           }
-
-          // Add to parts list
-          contentParts.push({
-            file_data: {
-              mime_type: value.type || "application/pdf",
-              file_uri: fileInfo.file.uri
-            }
-          });
-
         } catch (e: any) {
           console.error(`Error handling ${value.name}:`, e.message);
         }
@@ -103,14 +81,14 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
       return new Response(JSON.stringify({ error: "No files could be processed successfully." }), { status: 500, headers: corsHeaders });
     }
 
-    // 4. Generate Content (Using CORRECT Model)
+    // 4. Generate Content (Using CORRECT Model gemini-1.5-flash)
     const prompt = `You are a senior investment analyst.
 QUESTION: "${question}"
 TASK: Compare the attached documents. Extract data, normalize units, find conflicts (>10% diff), and recommend the most reliable source.
 Return STRICT JSON: { "conflicts": [{"value":"", "source":"", "context":"", "confidence":""}], "explanation":"", "recommendation":"" }`;
 
     const geminiRes = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", // CORRECT MODEL
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
       {
         method: "POST",
         headers: {
