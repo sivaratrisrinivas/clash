@@ -1,50 +1,40 @@
 import { AnalysisResult, UploadedFile } from "../types";
 
-// Helper to read file as Base64
-const fileToBase64 = (file: File): Promise<{ data: string; mimeType: string }> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      // Remove data URL prefix (e.g. "data:application/pdf;base64,")
-      const base64Data = result.split(',')[1];
-      resolve({
-        data: base64Data,
-        mimeType: file.type,
-      });
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-};
-
 export const analyzeDocuments = async (
   files: UploadedFile[],
   question: string
 ): Promise<AnalysisResult> => {
-  // Prepare file parts for API
-  const fileParts = await Promise.all(files.map(f => fileToBase64(f.file)));
+  // Use FormData for efficient file transfer (supports larger files)
+  const formData = new FormData();
+  formData.append('question', question);
+  
+  files.forEach((f, index) => {
+    formData.append(`file_${index}`, f.file);
+  });
 
-  // Call Vercel API route (or local dev server)
-  const apiUrl = import.meta.env.DEV 
-    ? '/api/analyze' 
-    : '/api/analyze';
+  const apiUrl = '/api/analyze';
 
   try {
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        files: fileParts,
-        question,
-      }),
+      body: formData, // FormData sets Content-Type automatically with boundary
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to analyze documents');
+      // Handle 413 Payload Too Large
+      if (response.status === 413) {
+        throw new Error('File size too large. Max 30MB per file, 50MB total.');
+      }
+      
+      // Try to parse error JSON, fallback to status text
+      let errorMessage = 'Failed to analyze documents';
+      try {
+        const error = await response.json();
+        errorMessage = error.error || errorMessage;
+      } catch {
+        errorMessage = response.statusText || errorMessage;
+      }
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();

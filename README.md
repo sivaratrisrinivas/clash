@@ -17,15 +17,25 @@ Upload → Question → AI Extract → Find Conflicts → Show Results → Expor
 
 **Local Development:**
 1. `npm install`
-2. Install Vercel CLI: `npm i -g vercel`
-3. Create `.env.local`: `GEMINI_API_KEY=your_key`
-4. Run: `vercel dev` (runs both frontend + API routes)
+2. Install Wrangler CLI: `npm i -g wrangler`
+3. Create `.dev.vars`: `GEMINI_API_KEY=your_key`
+4. Run: `npm run pages:dev` (runs frontend + API routes)
 
-**Deploy to Vercel:**
+**Deploy to Cloudflare Pages (Free):**
 1. Push to GitHub
-2. Import project in Vercel dashboard
-3. Add env var: `GEMINI_API_KEY=your_key`
-4. Deploy
+2. Go to [Cloudflare Dashboard](https://dash.cloudflare.com) > Pages
+3. Connect repository
+4. Build settings:
+   - Build command: `npm run build`
+   - Output directory: `dist`
+5. Add environment variable: `GEMINI_API_KEY=your_key`
+6. Deploy
+
+**Why Cloudflare:**
+- **Free tier**: 100MB request limit (supports 30MB files)
+- **Unlimited requests** on free tier
+- **Fast global CDN**
+- **No credit card required**
 
 API key secured server-side via `/api/analyze` route.
 

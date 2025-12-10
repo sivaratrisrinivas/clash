@@ -1,31 +1,65 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+interface Env {
+  GEMINI_API_KEY: string;
+}
 
-  const { files, question } = req.body;
+export async function onRequestPost({ request, env }: { request: Request; env: Env }) {
 
-  if (!files || !Array.isArray(files) || !question) {
-    return res.status(400).json({ error: "Missing files or question" });
-  }
-
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: "API Key not configured" });
+  if (!env.GEMINI_API_KEY) {
+    return new Response(JSON.stringify({ error: "API Key not configured" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    // Parse multipart/form-data
+    const formData = await request.formData();
+    const question = formData.get("question") as string;
+    
+    if (!question) {
+      return new Response(JSON.stringify({ error: "Missing question" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
-    // Convert base64 files to parts
-    const fileParts = files.map((f: { data: string; mimeType: string }) => ({
-      inlineData: {
-        data: f.data,
-        mimeType: f.mimeType,
-      },
-    }));
+    // Get all files from form data
+    const files: Array<{ data: ArrayBuffer; mimeType: string }> = [];
+    for (const [key, value] of formData.entries()) {
+      if (key.startsWith("file_") && value instanceof File) {
+        const arrayBuffer = await value.arrayBuffer();
+        files.push({
+          data: arrayBuffer,
+          mimeType: value.type || "application/pdf",
+        });
+      }
+    }
+
+    if (files.length === 0) {
+      return new Response(JSON.stringify({ error: "No files uploaded" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+
+    // Convert files to base64 for Gemini API
+    const fileParts = files.map((file) => {
+      // Convert ArrayBuffer to base64
+      const bytes = new Uint8Array(file.data);
+      const binary = String.fromCharCode(...bytes);
+      const base64 = btoa(binary);
+      
+      return {
+        inlineData: {
+          data: base64,
+          mimeType: file.mimeType,
+        },
+      };
+    });
 
     const responseSchema = {
       type: Type.OBJECT,
@@ -89,18 +123,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const data = JSON.parse(text);
 
-    return res.status(200).json({
+    return new Response(JSON.stringify({
       question,
       conflicts: data.conflicts || [],
       explanation: data.explanation || "Could not generate explanation.",
       recommendation: data.recommendation || "No recommendation available.",
       timestamp: Date.now()
+    }), {
+      status: 200,
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   } catch (error: any) {
     console.error("Gemini Analysis Error:", error);
-    return res.status(500).json({ 
+    return new Response(JSON.stringify({ 
       error: "Failed to analyze documents. Ensure files are valid and API key is correct.",
       details: error.message 
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
     });
   }
 }

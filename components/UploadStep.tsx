@@ -33,6 +33,22 @@ export const UploadStep: React.FC<UploadStepProps> = ({ files, onFilesChange, on
       return;
     }
 
+    // Check file sizes (30MB per file limit)
+    const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB per file
+    const totalSize = [...files, ...validFiles].reduce((sum, f) => sum + f.file.size, 0);
+    const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total (Vercel Pro limit)
+
+    const oversizedFiles = validFiles.filter(f => f.file.size > MAX_FILE_SIZE);
+    if (oversizedFiles.length > 0) {
+      setError(`File too large: ${oversizedFiles[0].name}. Max 30MB per file.`);
+      return;
+    }
+
+    if (totalSize > MAX_TOTAL_SIZE) {
+      setError(`Total file size exceeds 50MB limit. Current: ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
+      return;
+    }
+
     const uploaded: UploadedFile[] = validFiles.map(f => ({
       file: f,
       id: Math.random().toString(36).substring(7)
@@ -97,6 +113,7 @@ export const UploadStep: React.FC<UploadStepProps> = ({ files, onFilesChange, on
           <div className="h-80 flex flex-col items-center justify-center border border-transparent group-hover:border-[#E5E5E5] dark:group-hover:border-[#222] rounded-3xl transition-colors duration-500">
              <p className="text-xl font-medium text-[#111] dark:text-[#EEE] tracking-tight mb-2">Drop documents here</p>
              <p className="text-[#888] dark:text-[#555] font-light">PDFs or text files</p>
+             <p className="text-xs text-[#AAA] dark:text-[#444] mt-2">Max 30MB per file, 50MB total</p>
           </div>
         ) : (
           <div className="space-y-1 p-2">
