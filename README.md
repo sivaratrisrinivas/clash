@@ -2,144 +2,116 @@
 
 ## Why
 
-Market research docs disagree. Same question, different numbers. CLASH finds conflicts and explains why.
+When researching a market or company, you often find multiple reports with different numbers. One report says the market is $20 billion, another says $25 billion. Which one is right? Why do they disagree?
+
+CLASH helps you find these conflicts and understand why they exist, so you can make better decisions.
 
 ## What
 
-Upload docs. Ask question. Get conflicts with source, confidence, explanation, recommendation. Export memo.
+CLASH is a tool that:
 
-**Flow:**
+1. **Takes your documents** - Upload multiple PDF reports
+2. **Answers your question** - Ask something like "What is the market size?"
+3. **Finds conflicts** - Shows you where the documents disagree
+4. **Explains why** - Tells you why the numbers differ (different timeframes, methodologies, etc.)
+5. **Recommends** - Suggests which source to trust and why
+
+**Simple flow:**
 ```
-Upload → Question → AI Extract → Find Conflicts → Show Results → Export
+Upload documents → Ask question → Get conflicts and explanation → Make decision
 ```
 
 ## How
 
+### Using CLASH
+
+1. **Upload your documents** - Drag and drop PDF files (up to 30MB each)
+2. **Enter your question** - Type what you want to know (e.g., "What is the market size?")
+3. **Review results** - See all conflicting values, explanations, and recommendations
+4. **Export** - Download a summary memo with all findings
+
+### Running CLASH Yourself
+
 **Local Development:**
-1. `npm install`
-2. Install Wrangler CLI: `npm i -g wrangler`
-3. Create `.dev.vars`: `GEMINI_API_KEY=your_key`
-4. Run: `npm run pages:dev` (runs frontend + API routes)
+1. Install dependencies: `npm install`
+2. Install Wrangler: `npm i -g wrangler`
+3. Create `.dev.vars` file with your Gemini API key: `GEMINI_API_KEY=your_key`
+4. Run: `npm run pages:dev`
 
-**Deploy to Cloudflare Pages (Free):**
-1. Push to GitHub
-2. Go to [Cloudflare Dashboard](https://dash.cloudflare.com) > Pages
-3. Connect repository
-4. Build settings:
-   - Build command: `npm run build`
-   - Output directory: `dist`
-5. Add environment variable: `GEMINI_API_KEY=your_key` (set for **Production** environment)
-6. Deploy
+**Deploy to Cloudflare Pages:**
+1. Push your code to GitHub
+2. Go to Cloudflare Dashboard → Pages
+3. Connect your repository
+4. Set build command: `npm run build`
+5. Set output directory: `dist`
+6. Add environment variable: `GEMINI_API_KEY=your_key` (for Production)
+7. Deploy
 
-**Why Cloudflare:**
-- **Free tier**: 100MB request limit (supports 30MB files)
-- **Unlimited requests** on free tier
-- **Fast global CDN**
-- **No credit card required**
-
-API key secured server-side via `/api/analyze` route.
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph "Frontend (React + Vite)"
-        A[User uploads PDFs] --> B[User enters question]
-        B --> C[FormData: files + question]
-    end
-    
-    subgraph "Cloudflare Pages Function"
-        C --> D[Parse FormData]
-        D --> E[Extract file_0]
-        E --> F[Convert to ArrayBuffer]
-        F --> G[Chunked Base64 conversion<br/>32KB chunks]
-    end
-    
-    subgraph "Gemini API"
-        G --> H[Single API call:<br/>file + question + prompt]
-        H --> I[AI processes:<br/>Extract, Normalize,<br/>Detect conflicts >10%,<br/>Explain differences,<br/>Assign confidence]
-    end
-    
-    subgraph "Response Processing"
-        I --> J[Parse JSON response]
-        J --> K[Clean markdown wrappers]
-        K --> L[Return structured data]
-    end
-    
-    subgraph "Frontend Display"
-        L --> M[Display Results:<br/>Conflicts list +<br/>Explanation +<br/>Recommendation]
-    end
-    
-    style A fill:#e1f5ff
-    style H fill:#fff4e1
-    style I fill:#fff4e1
-    style M fill:#e1f5ff
-```
+**Why Cloudflare Pages:**
+- Free tier supports large files (up to 30MB)
+- No credit card required
+- Fast and reliable
 
 ## Information Flow
 
+Here's how CLASH processes your documents:
+
 ```mermaid
 flowchart TD
-    A[User uploads PDFs] --> B[User enters question]
-    B --> C[Convert files to Base64<br/>chunked processing 32KB]
-    C --> D[Single Gemini API call<br/>with all docs + question + schema]
-    D --> E[AI processes in one pass:<br/>Extract answers, Normalize units,<br/>Detect conflicts >10%, Explain differences,<br/>Assign confidence per source]
-    E --> F[Structured JSON Response<br/>conflicts, explanation, recommendation]
-    F --> G[Display Results<br/>Conflicts list + Sidebar insights]
-    G --> H[Export Memo<br/>Download investment memo]
+    A[You upload PDF documents] --> B[You enter your question]
+    B --> C[CLASH uploads files to Google]
+    C --> D[Google processes the files]
+    D --> E[CLASH sends your question to AI]
+    E --> F[AI reads all documents at once]
+    F --> G[AI finds all answers to your question]
+    G --> H[AI compares the answers]
+    H --> I{Are there conflicts?}
+    I -->|Yes| J[AI explains why they differ]
+    I -->|No| K[AI confirms values are consistent]
+    J --> L[AI recommends which to trust]
+    K --> L
+    L --> M[CLASH shows you the results]
+    M --> N[You see conflicts, explanation, and recommendation]
+    
+    style A fill:#e1f5ff
+    style F fill:#fff4e1
+    style H fill:#fff4e1
+    style N fill:#e1f5ff
 ```
 
-## Request/Response Flow
+## How It Works
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Frontend
-    participant Cloudflare Function
-    participant Gemini API
-    
-    User->>Frontend: Upload PDFs + Enter question
-    Frontend->>Cloudflare Function: POST /api/analyze<br/>(FormData: files + question)
-    
-    Cloudflare Function->>Cloudflare Function: Parse FormData<br/>Extract file_0
-    Cloudflare Function->>Cloudflare Function: Convert to Base64<br/>(32KB chunks)
-    
-    Cloudflare Function->>Gemini API: POST generateContent<br/>(file + question + prompt)
-    Gemini API->>Cloudflare Function: JSON response<br/>(conflicts, explanation, recommendation)
-    
-    Cloudflare Function->>Cloudflare Function: Parse & clean response
-    Cloudflare Function->>Frontend: JSON response
-    Frontend->>User: Display results
-```
+**Step 1: Upload**
+- You upload multiple PDF documents
+- Files are sent to Google's servers for processing
 
-## Data Processing
+**Step 2: Question**
+- You ask a specific question (e.g., "What is the market size?")
+- The question is sent along with references to your uploaded documents
 
-**Extraction/Cleaning:**
-- AI extracts answers from all docs in one pass
-- AI normalizes units per prompt instruction
-- AI groups conflicts and flags >10% differences per prompt
-- AI assigns confidence (High/Medium/Low) per source reliability
+**Step 3: AI Analysis**
+- The AI reads all your documents at the same time
+- It finds every answer to your question from each document
+- It converts different units to the same format (e.g., all to billions)
+- It compares the answers to find conflicts (differences greater than 10%)
 
-**Presentation:**
-- Conflicts list: value, source, confidence badge, context (with page numbers)
-- Sidebar: explanation (why conflicts exist), recommendation (which to trust)
-- Export: investment memo with all data points and sources
+**Step 4: Results**
+- Shows you all the conflicting values
+- Explains why they differ (different dates, methods, definitions)
+- Recommends which source is most reliable
+- Lets you export everything as a memo
 
-## Technical Details
+## What Makes It Different
 
-**File Processing:**
-- Max file size: 30MB per file, 50MB total
-- Base64 conversion uses 32KB chunks to prevent stack overflow
-- Cloudflare Workers runtime compatible (no Node.js APIs)
+- **Compares multiple documents** - Not just one at a time
+- **Finds conflicts automatically** - Flags differences greater than 10%
+- **Explains why** - Not just what the numbers are, but why they differ
+- **Source tracking** - Shows which document each value came from
+- **Confidence levels** - Tells you how reliable each source is
 
-**API Endpoint:**
-- Route: `/api/analyze` (Cloudflare Pages Function)
-- Method: POST
-- Content-Type: `multipart/form-data`
-- Response: JSON with `conflicts[]`, `explanation`, `recommendation`
+## Technical Notes
 
-**Error Handling:**
-- 400: Missing file or question
-- 500: Server misconfiguration (no API key)
-- 502: Gemini API error
-- All errors return JSON with error details
+- Maximum file size: 30MB per file
+- Supports multiple files at once
+- Works entirely in your browser (no data stored on servers)
+- Uses Google's Gemini AI for analysis
