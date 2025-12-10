@@ -1,4 +1,4 @@
-// CLASH: Document Conflict Analyzer - Full Version
+// DIAGNOSTIC VERSION - Find exactly what crashes
 
 export async function onRequestPost(context: { request: Request; env: { GEMINI_API_KEY: string } }) {
   const headers = {
@@ -6,133 +6,86 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
     "Content-Type": "application/json",
   };
 
+  const diag: string[] = ["Step 0: Function loaded"];
+
   try {
-    if (!context.env.GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ 
-        question: "",
-        conflicts: [],
-        explanation: "API key not configured. Please set GEMINI_API_KEY in Cloudflare dashboard.",
-        recommendation: "",
-        timestamp: Date.now()
-      }), { status: 200, headers });
-    }
+    // Step 1: Check env
+    diag.push(`Step 1: hasApiKey=${!!context.env.GEMINI_API_KEY}`);
 
-    const formData = await context.request.formData();
-    const question = formData.get("question") as string;
-    
-    if (!question) {
-      return new Response(JSON.stringify({ 
-        question: "",
-        conflicts: [],
-        explanation: "No question provided.",
-        recommendation: "",
-        timestamp: Date.now()
-      }), { status: 200, headers });
-    }
-
-    // Collect all files
-    const fileParts: { inline_data: { mime_type: string; data: string } }[] = [];
-    const fileNames: string[] = [];
-
-    for (const [key, value] of formData.entries()) {
-      if (key.startsWith("file_") && value instanceof File) {
-        const buffer = await value.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        
-        // Safe byte-by-byte base64 conversion
-        let binary = "";
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        
-        fileParts.push({
-          inline_data: {
-            mime_type: value.type || "application/pdf",
-            data: btoa(binary),
-          },
-        });
-        fileNames.push(value.name);
-      }
-    }
-
-    if (fileParts.length === 0) {
-      return new Response(JSON.stringify({ 
-        question,
-        conflicts: [],
-        explanation: "No files were uploaded.",
-        recommendation: "",
-        timestamp: Date.now()
-      }), { status: 200, headers });
-    }
-
-    // Build prompt
-    const prompt = `You are a senior investment analyst comparing documents.
-
-QUESTION: "${question}"
-DOCUMENTS: ${fileNames.join(", ")}
-
-TASK:
-1. EXTRACT data points related to the question from each document
-2. COMPARE and identify conflicts (values differing >10% or contradictions)
-3. EXPLAIN why differences exist
-4. RECOMMEND which source to trust
-
-Return ONLY valid JSON (no markdown):
-{"conflicts":[{"value":"string","source":"string","context":"string","confidence":"High|Medium|Low"}],"explanation":"string","recommendation":"string"}`;
-
-    // Call Gemini
-    const res = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": context.env.GEMINI_API_KEY,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [...fileParts, { text: prompt }] }],
-          generationConfig: { temperature: 0.1 }
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      return new Response(JSON.stringify({ 
-        question,
-        conflicts: [],
-        explanation: `Gemini API error (${res.status}): ${errText.slice(0, 200)}`,
-        recommendation: "",
-        timestamp: Date.now()
-      }), { status: 200, headers });
-    }
-
-    const data = await res.json() as any;
-    let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    
-    // Clean markdown wrappers
-    text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-
-    let parsed;
+    // Step 2: Parse formData
+    let formData: FormData;
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = { conflicts: [], explanation: text, recommendation: "" };
+      formData = await context.request.formData();
+      diag.push("Step 2: formData parsed");
+    } catch (e: any) {
+      diag.push(`Step 2 FAILED: ${e.message}`);
+      return new Response(JSON.stringify({ question: "", conflicts: [], explanation: diag.join("\n"), recommendation: "", timestamp: Date.now() }), { status: 200, headers });
     }
 
+    // Step 3: Get question
+    const question = formData.get("question") as string || "no question";
+    diag.push(`Step 3: question="${question.slice(0, 30)}..."`);
+
+    // Step 4: Count files
+    let fileCount = 0;
+    const entries = Array.from(formData.entries());
+    for (const [key] of entries) {
+      if (key.startsWith("file_")) fileCount++;
+    }
+    diag.push(`Step 4: fileCount=${fileCount}`);
+
+    // Step 5: Get first file info (without reading content)
+    const file0 = formData.get("file_0");
+    if (file0 && file0 instanceof File) {
+      diag.push(`Step 5: file0 name=${file0.name}, size=${file0.size}, type=${file0.type}`);
+    } else {
+      diag.push(`Step 5: file0 not found or not File instance`);
+    }
+
+    // Step 6: Try to read file content
+    if (file0 && file0 instanceof File) {
+      try {
+        const buffer = await file0.arrayBuffer();
+        diag.push(`Step 6: arrayBuffer size=${buffer.byteLength}`);
+        
+        // Step 7: Convert small portion to base64
+        const bytes = new Uint8Array(buffer);
+        const testSize = Math.min(100, bytes.length);
+        let testBinary = "";
+        for (let i = 0; i < testSize; i++) {
+          testBinary += String.fromCharCode(bytes[i]);
+        }
+        const testBase64 = btoa(testBinary);
+        diag.push(`Step 7: base64 test (first 100 bytes) length=${testBase64.length}`);
+        
+        // Step 8: Convert full file
+        let fullBinary = "";
+        for (let i = 0; i < bytes.length; i++) {
+          fullBinary += String.fromCharCode(bytes[i]);
+        }
+        const fullBase64 = btoa(fullBinary);
+        diag.push(`Step 8: full base64 length=${fullBase64.length}`);
+        
+      } catch (e: any) {
+        diag.push(`Step 6-8 FAILED: ${e.message}`);
+      }
+    }
+
+    // Return diagnostic info
     return new Response(JSON.stringify({
       question,
-      conflicts: parsed.conflicts || [],
-      explanation: parsed.explanation || "",
-      recommendation: parsed.recommendation || "",
-      timestamp: Date.now(),
+      conflicts: [],
+      explanation: diag.join("\n"),
+      recommendation: "Diagnostic complete",
+      timestamp: Date.now()
     }), { status: 200, headers });
 
   } catch (err: any) {
-    return new Response(JSON.stringify({ 
+    diag.push(`CAUGHT ERROR: ${err.message}`);
+    return new Response(JSON.stringify({
       question: "",
       conflicts: [],
-      explanation: `Error: ${err.message}`,
+      explanation: diag.join("\n"),
       recommendation: "",
       timestamp: Date.now()
     }), { status: 200, headers });
