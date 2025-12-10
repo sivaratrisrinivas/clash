@@ -18,29 +18,29 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
       return new Response(JSON.stringify({ error: "Missing question" }), { status: 400, headers: corsHeaders });
     }
 
-    // 3. Collect ALL files (not just file_0)
+    // 3. Process Files (Memory Optimized)
     const fileParts: { inline_data: { mime_type: string; data: string } }[] = [];
     const fileNames: string[] = [];
 
-    // Process all file_* entries
     for (const [key, value] of formData.entries()) {
       if (key.startsWith("file_") && value instanceof File) {
         try {
-          // SAFE File Conversion (32KB chunks to prevent stack overflow)
           const arrayBuffer = await value.arrayBuffer();
           const bytes = new Uint8Array(arrayBuffer);
           
-          let binary = '';
+          // Optimization: Use Array.join() instead of string concatenation +=
+          // This prevents memory fragmentation which causes 503 errors
+          const chunks: string[] = [];
+          const chunkSize = 32768; // 32KB
           const len = bytes.byteLength;
-          const chunkSize = 32768; // Process in 32KB chunks
 
           for (let i = 0; i < len; i += chunkSize) {
             const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
-            // Spread operator is safe for 32KB chunks
-            binary += String.fromCharCode(...chunk);
+            chunks.push(String.fromCharCode(...chunk));
           }
           
-          const base64Data = btoa(binary);
+          const binaryString = chunks.join("");
+          const base64Data = btoa(binaryString);
 
           fileParts.push({
             inline_data: {
@@ -49,8 +49,8 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
             }
           });
           fileNames.push(value.name);
+          
         } catch (fileError: any) {
-          // If one file fails, continue with others
           console.error(`Failed to process file ${key}:`, fileError.message);
         }
       }
@@ -60,7 +60,7 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
       return new Response(JSON.stringify({ error: "No valid files uploaded" }), { status: 400, headers: corsHeaders });
     }
 
-    // 4. Build prompt with all document names
+    // 4. Build Prompt
     const documentList = fileNames.join(", ");
     const prompt = `You are a senior investment analyst comparing ${fileParts.length} document(s).
 
@@ -89,10 +89,9 @@ Return ONLY valid JSON (no markdown, no code blocks):
   "recommendation": "Which value to trust and why"
 }
 
-If no conflicts found, still list all extracted values in conflicts array.
-Be specific with numbers. Cite sources.`;
+If no conflicts found, still list all extracted values in conflicts array.`;
 
-    // 5. Call Gemini API with ALL files
+    // 5. Call Gemini API
     const geminiRes = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
       {
@@ -104,8 +103,8 @@ Be specific with numbers. Cite sources.`;
         body: JSON.stringify({
           contents: [{
             parts: [
-              ...fileParts, // All files first
-              { text: prompt } // Then the prompt
+              ...fileParts,
+              { text: prompt }
             ]
           }],
           generationConfig: {
@@ -123,10 +122,9 @@ Be specific with numbers. Cite sources.`;
     const geminiData = await geminiRes.json() as any;
     const textResponse = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // 6. Parse AI Response
+    // 6. Parse Response
     let parsedResult;
     try {
-      // Clean markdown code blocks if present
       const cleanJson = textResponse.replace(/```json|```/g, '').trim();
       parsedResult = JSON.parse(cleanJson);
     } catch (e) {
