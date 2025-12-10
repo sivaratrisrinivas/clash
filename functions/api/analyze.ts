@@ -13,29 +13,86 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
     // 2. Parse Request
     const formData = await context.request.formData();
     const question = formData.get("question") as string;
-    const file = formData.get("file_0") as File;
 
-    if (!question || !file) {
-      return new Response(JSON.stringify({ error: "Missing file or question" }), { status: 400, headers: corsHeaders });
+    if (!question) {
+      return new Response(JSON.stringify({ error: "Missing question" }), { status: 400, headers: corsHeaders });
     }
 
-    // 3. SAFE File Conversion (The Fix)
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    
-    let binary = '';
-    const len = bytes.byteLength;
-    const chunkSize = 32768; // Process in 32KB chunks to prevent stack overflow/memory crash
+    // 3. Collect ALL files (not just file_0)
+    const fileParts: { inline_data: { mime_type: string; data: string } }[] = [];
+    const fileNames: string[] = [];
 
-    for (let i = 0; i < len; i += chunkSize) {
-      const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
-      // Spread operator is safe for 32KB chunks
-      binary += String.fromCharCode(...chunk);
+    // Process all file_* entries
+    for (const [key, value] of formData.entries()) {
+      if (key.startsWith("file_") && value instanceof File) {
+        try {
+          // SAFE File Conversion (32KB chunks to prevent stack overflow)
+          const arrayBuffer = await value.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuffer);
+          
+          let binary = '';
+          const len = bytes.byteLength;
+          const chunkSize = 32768; // Process in 32KB chunks
+
+          for (let i = 0; i < len; i += chunkSize) {
+            const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+            // Spread operator is safe for 32KB chunks
+            binary += String.fromCharCode(...chunk);
+          }
+          
+          const base64Data = btoa(binary);
+
+          fileParts.push({
+            inline_data: {
+              mime_type: value.type || "application/pdf",
+              data: base64Data
+            }
+          });
+          fileNames.push(value.name);
+        } catch (fileError: any) {
+          // If one file fails, continue with others
+          console.error(`Failed to process file ${key}:`, fileError.message);
+        }
+      }
     }
-    
-    const base64Data = btoa(binary);
 
-    // 4. Call Gemini API
+    if (fileParts.length === 0) {
+      return new Response(JSON.stringify({ error: "No valid files uploaded" }), { status: 400, headers: corsHeaders });
+    }
+
+    // 4. Build prompt with all document names
+    const documentList = fileNames.join(", ");
+    const prompt = `You are a senior investment analyst comparing ${fileParts.length} document(s).
+
+QUESTION: "${question}"
+
+DOCUMENTS: ${documentList}
+
+TASK:
+1. EXTRACT: Find all specific data points related to the question from EACH document
+2. NORMALIZE: Convert all values to standard units (billions USD, percentages)
+3. COMPARE: Identify conflicts where values differ by >10% or statements contradict
+4. EXPLAIN: Why do conflicts exist? (methodology, timeframe, scope, definitions)
+5. RECOMMEND: Which source is most reliable and why
+
+Return ONLY valid JSON (no markdown, no code blocks):
+{
+  "conflicts": [
+    {
+      "value": "The specific number or fact (e.g., '$196.63 billion')",
+      "source": "Document filename",
+      "context": "Exact quote with page if available",
+      "confidence": "High, Medium, or Low"
+    }
+  ],
+  "explanation": "Clear explanation of WHY the values differ",
+  "recommendation": "Which value to trust and why"
+}
+
+If no conflicts found, still list all extracted values in conflicts array.
+Be specific with numbers. Cite sources.`;
+
+    // 5. Call Gemini API with ALL files
     const geminiRes = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
       {
@@ -47,10 +104,13 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
         body: JSON.stringify({
           contents: [{
             parts: [
-              { inline_data: { mime_type: file.type || "text/plain", data: base64Data } },
-              { text: `Answer briefly: ${question}. Return STRICT JSON: {"conflicts":[{"value":"","source":"","confidence":"High|Medium|Low","context":""}],"explanation":"","recommendation":""}` }
+              ...fileParts, // All files first
+              { text: prompt } // Then the prompt
             ]
-          }]
+          }],
+          generationConfig: {
+            temperature: 0.1,
+          }
         }),
       }
     );
@@ -63,7 +123,7 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
     const geminiData = await geminiRes.json() as any;
     const textResponse = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // 5. Parse AI Response
+    // 6. Parse AI Response
     let parsedResult;
     try {
       // Clean markdown code blocks if present
