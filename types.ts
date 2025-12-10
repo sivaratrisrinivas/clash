@@ -6,16 +6,6 @@ export enum AppState {
   RESULTS = 'RESULTS'
 }
 
-// Each answer extracted from a document
-export interface Answer {
-  value: string;
-  source: string;      // filename
-  page?: number;       // page number if found
-  quote?: string;      // exact quote from document
-  confidence: 'High' | 'Medium' | 'Low';
-}
-
-// Legacy type for compatibility
 export interface ConflictItem {
   value: string;
   source: string;
@@ -25,13 +15,10 @@ export interface ConflictItem {
 
 export interface AnalysisResult {
   question: string;
-  answers: Answer[];           // All answers from all documents
-  hasConflict: boolean;        // True if values differ >10%
-  explanation: string;         // AI explanation (only meaningful if hasConflict)
-  recommendation: string;      // Which value to trust
+  conflicts: ConflictItem[];
+  explanation: string;
+  recommendation: string;
   timestamp: number;
-  // Legacy field for compatibility
-  conflicts?: ConflictItem[];
 }
 
 export interface UploadedFile {
