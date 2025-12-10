@@ -77,17 +77,20 @@ Be brutally concise. No fluff.`;
 
     // Call Gemini REST API directly (SDK doesn't work in Workers)
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": env.GEMINI_API_KEY,
+        },
         body: JSON.stringify({
           contents: [{
+            role: "user",
             parts: [...fileParts, { text: promptText }]
           }],
           generationConfig: {
             temperature: 0.1,
-            responseMimeType: "application/json",
           }
         })
       }
