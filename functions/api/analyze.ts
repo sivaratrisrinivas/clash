@@ -7,13 +7,21 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
   try {
     // 1. Validate Env
     if (!context.env.GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ error: "No API Key" }), { status: 500, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: "Server Error: No API Key" }), { status: 500, headers: corsHeaders });
     }
 
     // 2. Parse Form Data
-    const formData = await context.request.formData();
+    // Note: On free tier, parsing 40MB+ might still occasionally hit memory limits.
+    // If this fails often, you must upload files one by one.
+    let formData;
+    try {
+        formData = await context.request.formData();
+    } catch (e) {
+        return new Response(JSON.stringify({ error: "Upload too large for free server. Try fewer files." }), { status: 413, headers: corsHeaders });
+    }
+
     const question = formData.get("question") as string;
-    if (!question) return new Response(JSON.stringify({ error: "No question" }), { status: 400, headers: corsHeaders });
+    if (!question) return new Response(JSON.stringify({ error: "Missing question" }), { status: 400, headers: corsHeaders });
 
     const contentParts: any[] = [];
     
@@ -21,11 +29,9 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
     for (const [key, value] of formData.entries()) {
       if (key.startsWith("file_") && value instanceof File) {
         try {
-          // Upload to Gemini Files API
-          // This avoids loading the Base64 string into memory
+          // --- A. INITIALIZE UPLOAD ---
           const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${context.env.GEMINI_API_KEY}`;
           
-          // Step A: Start Resumable Upload
           const initRes = await fetch(uploadUrl, {
             method: "POST",
             headers: {
@@ -38,11 +44,11 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
             body: JSON.stringify({ file: { display_name: value.name } })
           });
 
+          if (!initRes.ok) throw new Error(`Init failed: ${initRes.statusText}`);
           const uploadUrlHeader = initRes.headers.get("x-goog-upload-url");
           if (!uploadUrlHeader) throw new Error("Failed to get upload URL");
 
-          // Step B: Upload Actual Bytes
-          // We pass the File object directly; fetch handles streaming
+          // --- B. UPLOAD BYTES ---
           const uploadRes = await fetch(uploadUrlHeader, {
             method: "POST",
             headers: {
@@ -53,45 +59,58 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
             body: value
           });
 
+          if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.statusText}`);
           const fileInfo = await uploadRes.json() as any;
-          const fileUri = fileInfo.file.uri;
-
-          // Check state (wait for processing if needed)
+          
+          // --- C. WAIT FOR PROCESSING (POLLING) ---
+          // Large files take time. We poll less frequently to save CPU.
           let state = fileInfo.file.state;
-          while (state === "PROCESSING") {
-             await new Promise(r => setTimeout(r, 1000));
+          let attempts = 0;
+          
+          // Poll up to 20 seconds (10 attempts * 2s)
+          while (state === "PROCESSING" && attempts < 10) {
+             await new Promise(r => setTimeout(r, 2000)); // Wait 2s
+             
              const statusRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/files/${fileInfo.file.name.split('/').pop()}?key=${context.env.GEMINI_API_KEY}`);
              const statusData = await statusRes.json() as any;
+             
              state = statusData.state;
-             if (state === "FAILED") throw new Error("File processing failed");
+             if (state === "FAILED") throw new Error("Google failed to process this file.");
+             attempts++;
           }
 
-          // Add to parts list as a reference (file_data) instead of inline_data
+          if (state === "PROCESSING") {
+             // If still processing, we skip this file to avoid server timeout
+             console.warn(`File ${value.name} is taking too long to process. Skipped.`);
+             continue;
+          }
+
+          // Add to parts list
           contentParts.push({
             file_data: {
               mime_type: value.type || "application/pdf",
-              file_uri: fileUri
+              file_uri: fileInfo.file.uri
             }
           });
 
         } catch (e: any) {
-          console.error(`Upload failed for ${value.name}: ${e.message}`);
+          console.error(`Error handling ${value.name}:`, e.message);
         }
       }
     }
 
     if (contentParts.length === 0) {
-      return new Response(JSON.stringify({ error: "Failed to upload any files" }), { status: 500, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: "No files could be processed successfully." }), { status: 500, headers: corsHeaders });
     }
 
-    // 4. Call Gemini with File References (Lightweight!)
+    // 4. Generate Content (Using CORRECT Model)
     const prompt = `You are a senior investment analyst.
 QUESTION: "${question}"
 TASK: Compare the attached documents. Extract data, normalize units, find conflicts (>10% diff), and recommend the most reliable source.
 Return STRICT JSON: { "conflicts": [{"value":"", "source":"", "context":"", "confidence":""}], "explanation":"", "recommendation":"" }`;
 
     const geminiRes = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", // Use 2.5 Flash (stable)
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", // CORRECT MODEL
       {
         method: "POST",
         headers: {
@@ -109,22 +128,25 @@ Return STRICT JSON: { "conflicts": [{"value":"", "source":"", "context":"", "con
       }
     );
 
-    // 5. Handle Response
     if (!geminiRes.ok) {
       const err = await geminiRes.text();
-      return new Response(JSON.stringify({ error: "Gemini Error", details: err }), { status: 502, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: "Gemini API Error", details: err }), { status: 502, headers: corsHeaders });
     }
 
     const data = await geminiRes.json() as any;
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     
-    // Clean and Parse
+    // Clean and Parse JSON
     const cleanJson = text.replace(/```json|```/g, '').trim();
     let result;
     try {
         result = JSON.parse(cleanJson);
     } catch {
-        result = { conflicts: [], explanation: text, recommendation: "Could not parse JSON" };
+        result = { 
+            conflicts: [], 
+            explanation: text, 
+            recommendation: "Could not parse AI response into strict JSON." 
+        };
     }
 
     return new Response(JSON.stringify({
@@ -134,7 +156,7 @@ Return STRICT JSON: { "conflicts": [{"value":"", "source":"", "context":"", "con
     }), { status: 200, headers: corsHeaders });
 
   } catch (err: any) {
-    return new Response(JSON.stringify({ error: "Server Error", details: err.message }), { status: 500, headers: corsHeaders });
+    return new Response(JSON.stringify({ error: "Critical Worker Error", details: err.message }), { status: 500, headers: corsHeaders });
   }
 }
 
