@@ -15,12 +15,19 @@ Upload → Question → AI Extract → Find Conflicts → Show Results → Expor
 
 ## How
 
-**Setup:**
+**Local Development:**
 1. `npm install`
-2. Create `.env.local`: `GEMINI_API_KEY=your_key`
-3. `npm run dev`
+2. Install Vercel CLI: `npm i -g vercel`
+3. Create `.env.local`: `GEMINI_API_KEY=your_key`
+4. Run: `vercel dev` (runs both frontend + API routes)
 
-Runs at `http://localhost:3000`
+**Deploy to Vercel:**
+1. Push to GitHub
+2. Import project in Vercel dashboard
+3. Add env var: `GEMINI_API_KEY=your_key`
+4. Deploy
+
+API key secured server-side via `/api/analyze` route.
 
 ## Info Flow
 
