@@ -1,11 +1,18 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
 interface Env {
   GEMINI_API_KEY: string;
 }
 
-export async function onRequestPost({ request, env }: { request: Request; env: Env }) {
+// Helper: ArrayBuffer to base64
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
+export async function onRequestPost({ request, env }: { request: Request; env: Env }) {
   if (!env.GEMINI_API_KEY) {
     return new Response(JSON.stringify({ error: "API Key not configured" }), {
       status: 500,
@@ -14,7 +21,6 @@ export async function onRequestPost({ request, env }: { request: Request; env: E
   }
 
   try {
-    // Parse multipart/form-data
     const formData = await request.formData();
     const question = formData.get("question") as string;
     
@@ -26,100 +32,79 @@ export async function onRequestPost({ request, env }: { request: Request; env: E
     }
 
     // Get all files from form data
-    const files: Array<{ data: ArrayBuffer; mimeType: string }> = [];
+    const fileParts: Array<{ inlineData: { data: string; mimeType: string } }> = [];
     for (const [key, value] of formData.entries()) {
       if (key.startsWith("file_") && value instanceof File) {
         const arrayBuffer = await value.arrayBuffer();
-        files.push({
-          data: arrayBuffer,
-          mimeType: value.type || "application/pdf",
+        fileParts.push({
+          inlineData: {
+            data: arrayBufferToBase64(arrayBuffer),
+            mimeType: value.type || "application/pdf",
+          },
         });
       }
     }
 
-    if (files.length === 0) {
+    if (fileParts.length === 0) {
       return new Response(JSON.stringify({ error: "No files uploaded" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+    const promptText = `You are a senior investment analyst.
+Your task is to answer the user's question: "${question}" by reconciling data across the attached documents.
 
-    // Convert files to base64 for Gemini API
-    const fileParts = files.map((file) => {
-      // Convert ArrayBuffer to base64
-      const bytes = new Uint8Array(file.data);
-      const binary = String.fromCharCode(...bytes);
-      const base64 = btoa(binary);
-      
-      return {
-        inlineData: {
-          data: base64,
-          mimeType: file.mimeType,
-        },
-      };
-    });
+1. EXTRACT: Find all specific mentions related to the question.
+2. COMPARE: Identify material conflicts (e.g., numbers differing by >10%) or distinct viewpoints.
+3. EXPLAIN: Why do they differ? (Methodology? Date? Scope? Definition?)
 
-    const responseSchema = {
-      type: Type.OBJECT,
-      properties: {
-        conflicts: {
-          type: Type.ARRAY,
-          description: "List of conflicting or distinct data points found in the documents.",
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              value: { type: Type.STRING, description: "The specific number, date, or fact extracted (e.g., '$20B', '15%')." },
-              source: { type: Type.STRING, description: "The name of the document or organization source." },
-              context: { type: Type.STRING, description: "Exact quote or location context. MUST include Page Number if available (e.g., 'Page 12: Total addressable market...')." },
-              confidence: { type: Type.STRING, description: "Perceived reliability: 'High', 'Medium', or 'Low'." }
-            },
-            required: ["value", "source", "context", "confidence"]
+Output as JSON with this exact structure:
+{
+  "conflicts": [
+    {
+      "value": "The specific number or fact (e.g., '$20B', '15%')",
+      "source": "Document or organization name",
+      "context": "Quote with page number if available (e.g., 'Page 12: ...')",
+      "confidence": "High, Medium, or Low"
+    }
+  ],
+  "explanation": "Why the numbers/facts differ",
+  "recommendation": "Which source to trust and why"
+}
+
+Be brutally concise. No fluff.`;
+
+    // Call Gemini REST API directly (SDK doesn't work in Workers)
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [...fileParts, { text: promptText }]
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
           }
-        },
-        explanation: {
-          type: Type.STRING,
-          description: "A clear, human-readable explanation of WHY the numbers/facts differ (e.g., different definitions, dates, methodologies)."
-        },
-        recommendation: {
-          type: Type.STRING,
-          description: "A synthesized 'Bottom Line' recommendation on which number is likely most accurate for an investor."
-        }
-      },
-      required: ["conflicts", "explanation", "recommendation"]
-    };
-
-    const promptText = `
-      You are a senior investment analyst.
-      Your task is to answer the user's question: "${question}" by reconciling data across the attached documents.
-      
-      1. EXTRACT: Find all specific mentions related to the question.
-      2. COMPARE: Identify material conflicts (e.g., numbers differing by >10%) or distinct viewpoints.
-      3. EXPLAIN: Why do they differ? (Methodology? Date? Scope? Definition?)
-      
-      Output Format Requirements:
-      - Context: You MUST cite the Page Number if the document allows (e.g., "Page 5: ...").
-      - Value: Normalize units where possible (e.g., convert all to USD Billions).
-      - Recommendation: Give a decisive advice.
-      
-      Be brutally concise. No fluff.
-    `;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: {
-        parts: [...fileParts, { text: promptText }]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.1,
+        })
       }
-    });
+    );
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
+    if (!geminiResponse.ok) {
+      const errorText = await geminiResponse.text();
+      console.error("Gemini API Error:", errorText);
+      throw new Error(`Gemini API error: ${geminiResponse.status}`);
+    }
+
+    const geminiData = await geminiResponse.json() as any;
+    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!text) {
+      throw new Error("No response from Gemini");
+    }
 
     const data = JSON.parse(text);
 
@@ -137,9 +122,9 @@ export async function onRequestPost({ request, env }: { request: Request; env: E
       },
     });
   } catch (error: any) {
-    console.error("Gemini Analysis Error:", error);
+    console.error("Analysis Error:", error);
     return new Response(JSON.stringify({ 
-      error: "Failed to analyze documents. Ensure files are valid and API key is correct.",
+      error: "Failed to analyze documents.",
       details: error.message 
     }), {
       status: 500,
