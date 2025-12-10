@@ -35,10 +35,12 @@ export const UploadStep: React.FC<UploadStepProps> = ({ files, onFilesChange, on
 
     // Check file sizes (30MB per file limit)
     const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB per file
-    const totalSize = [...files, ...validFiles].reduce((sum, f) => sum + f.file.size, 0);
-    const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total (Vercel Pro limit)
+    const existingSize = files.reduce((sum, f) => sum + f.file.size, 0);
+    const newSize = validFiles.reduce((sum, f) => sum + f.size, 0);
+    const totalSize = existingSize + newSize;
+    const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total
 
-    const oversizedFiles = validFiles.filter(f => f.file.size > MAX_FILE_SIZE);
+    const oversizedFiles = validFiles.filter(f => f.size > MAX_FILE_SIZE);
     if (oversizedFiles.length > 0) {
       setError(`File too large: ${oversizedFiles[0].name}. Max 30MB per file.`);
       return;
