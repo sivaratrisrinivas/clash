@@ -33,16 +33,20 @@ export async function onRequestPost(context: { request: Request; env: { GEMINI_A
       return new Response(JSON.stringify({ error: "No files", step: 4 }), { status: 400, headers: corsHeaders });
     }
 
-    // Step 5: Convert first file to base64
+    // Step 5: Convert first file to base64 (Optimized)
     const firstFile = formData.get("file_0") as File;
     const buffer = await firstFile.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     
-    // Safe base64 conversion
     let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    const len = bytes.byteLength;
+    const chunkSize = 32768; // 32KB chunks to avoid stack overflow
+    for (let i = 0; i < len; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+      // Apply arguments limit requires chunking
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
     }
+    
     const base64 = btoa(binary);
 
     // Step 6: Call Gemini
